@@ -69,17 +69,19 @@ def compare_label(computed: Iterable[str], declared: Iterable[str],
     return result
 
 
-def missing_allergen_sources(tree: List[dict], allergens: Iterable[str]) -> dict:
-    """为每个过敏原收集配料树中携带该过敏原的原料（自身标注）的全部来源路径。
+def allergen_sources(tree: List[dict], allergens: Iterable[str],
+                     own_key: str = "own_allergens") -> dict:
+    """为每个过敏原收集配料树中自身标注（节点 dict 的 own_key 字段）
+    携带该过敏原的原料的全部来源路径。
 
     路径为从顶层配料到具体原料的名称序列，例如
     ``["巧克力酱", "奶粉", "乳清粉"]`` 表示「巧克力酱 > 奶粉 > 乳清粉」。
     同名原料出现在不同分支时视为不同节点，路径分别保留、不做合并；
     每条路径在树中只会产生一次（结构去重），最终按路径整体稳定排序。
 
-    tree 为节点 dict（IngredientNode.to_dict() 或历史记录反序列化的结果），
-    判定依据是每个节点自身的 own_allergens，子配料传播不算独立来源，
-    因此同一过敏原既被父级自身标注、又由子配料携带时，两条路径都会保留。
+    own_key 默认为 ``own_allergens``（常规审查）；供应商方案风险区间
+    预览复用本函数，分别以 ``own_certain`` / ``own_possible`` 收集
+    确定遗漏与潜在遗漏的来源路径。
     """
     wanted = set(allergens)
     hit: Dict[str, Set[tuple]] = {a: set() for a in wanted}
@@ -87,7 +89,7 @@ def missing_allergen_sources(tree: List[dict], allergens: Iterable[str]) -> dict
     def walk(nodes: List[dict], prefix: tuple) -> None:
         for node in nodes:
             path = prefix + (node.get("name", ""),)
-            own = set(node.get("own_allergens", ()))
+            own = set(node.get(own_key, ()))
             for allergen in own & wanted:
                 hit[allergen].add(path)
             walk(node.get("children", []), path)
@@ -95,6 +97,15 @@ def missing_allergen_sources(tree: List[dict], allergens: Iterable[str]) -> dict
     walk(tree, ())
     return {allergen: [list(path) for path in sorted(hit[allergen])]
             for allergen in sorted(wanted) if hit[allergen]}
+
+
+def missing_allergen_sources(tree: List[dict], allergens: Iterable[str]) -> dict:
+    """常规审查的遗漏来源路径：以每个节点自身的 own_allergens 为判定依据。
+
+    子配料传播不算独立来源，因此同一过敏原既被父级自身标注、又由子配料
+    携带时，两条路径都会保留。
+    """
+    return allergen_sources(tree, allergens, "own_allergens")
 
 
 def diff_allergens(old: Iterable[str], new: Iterable[str]) -> dict:

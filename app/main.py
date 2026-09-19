@@ -21,6 +21,7 @@ from . import db
 from .recheck import build_recheck
 from .report import render_html_report, render_markdown_report
 from .review import analyze
+from .supplier import SupplierPlanError, preview_supplier_plans
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -64,6 +65,13 @@ class ReviewCreate(BaseModel):
 class RecheckRequest(BaseModel):
     # false：仅预览前后差异；true：确认后覆盖结果并更新指纹
     confirm: bool = False
+
+
+class SupplierPreviewRequest(BaseModel):
+    # 供应商方案风险区间（临时预览）：不落库、不写字典、不留历史
+    text: str
+    plans_text: str = ""
+    declared: List[str] = Field(default_factory=list)
 
 
 # ---------- 页面 ----------
@@ -168,6 +176,27 @@ def recheck_review(rid: int, payload: RecheckRequest):
         outcome["review"] = updated
     outcome["id"] = rid
     return outcome
+
+
+# ---------- 供应商方案风险区间（临时预览，不落库） ----------
+
+@app.post("/api/supplier-preview")
+def supplier_preview(payload: SupplierPreviewRequest):
+    """供应商互斥过敏原方案的风险区间预览。
+
+    后端不枚举方案组合，而是在嵌套配料树上分别传播必然过敏原（各方案
+    交集）与可能过敏原（各方案并集），对照标签声明给出确定遗漏、潜在
+    遗漏、确定多报等区间及两类遗漏的来源路径。仅做临时预览：
+    不写入字典、不产生历史记录。
+    """
+    if not payload.text.strip():
+        raise HTTPException(400, "配方文本不能为空")
+    try:
+        return preview_supplier_plans(
+            text=payload.text, plans_text=payload.plans_text,
+            declared=sorted(set(payload.declared)))
+    except SupplierPlanError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/reviews/{rid}/report")

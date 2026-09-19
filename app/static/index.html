@@ -82,6 +82,19 @@
   .delta-path { margin: 2px 0 2px 18px; font-size: 13px; }
   .recheck-preview { border-top: 1px dashed #d0d7de; margin-top: 10px;
                      padding-top: 8px; }
+  /* 供应商方案风险区间预览 */
+  .preview-note { background: #fff7ed; border: 1px solid #fdba74;
+                  border-radius: 8px; padding: 8px 12px; font-size: 12.5px;
+                  color: var(--orange); margin: 6px 0 10px; }
+  .badge.certain { background: #ffd9d6; color: var(--red); font-weight: 600; }
+  .badge.certain.own { background: #fda29b; color: #7a271a; }
+  .badge.possible { background: #ffedd5; color: var(--orange); }
+  .badge.possible.own { background: #fed7aa; color: #7c2d12; }
+  .badge.inherit-possible { background: #fff4e6; color: #c2410c; }
+  .tag-covered { color: var(--blue); font-size: 12px; margin-left: 6px; }
+  .supplier-plan { display: inline-block; background: #eef4ff; border: 1px solid #c7d7fe;
+                   border-radius: 6px; padding: 1px 8px; margin: 2px 4px 2px 0;
+                   font-size: 12.5px; color: #1849a9; }
 </style>
 </head>
 <body>
@@ -131,8 +144,41 @@
   </div>
 </section>
 
+<section id="supplier-section">
+  <h2>③ 供应商方案风险区间预览 <span class="pill orange">临时预览 · 不保存</span></h2>
+  <p class="hint">为配方中的若干原料填写<b>互斥</b>供应商方案（实际生产只选其中一个）：
+    每行一条 <code>原料：方案1；方案2</code>，方案之间用分号分隔，方案内过敏原用逗号分隔；
+    空方案写 <code>无</code>；未覆盖的原料沿用上方字典。系统<b>不枚举方案组合</b>，
+    而是沿配料树分别传播<b>必然过敏原</b>（各方案交集）与<b>可能过敏原</b>（各方案并集）。</p>
+  <div class="preview-note">⚠ 本能力仅做临时预览：不会写入过敏原字典，也不会产生或修改历史审查记录。</div>
+  <div class="row">
+    <div>
+      <label>配方文本（单版）—— 括号表示子配料，可多层嵌套</label>
+      <textarea id="supplier-text" rows="4"
+        placeholder="配料表：小麦粉，巧克力酱（奶粉，可可脂，香精），鸡蛋"></textarea>
+    </div>
+    <div>
+      <label>供应商互斥方案，每行 <code>原料：方案1；方案2</code></label>
+      <textarea id="supplier-plans" rows="4"
+        placeholder="奶粉：乳；无&#10;香精：花生，乳；大豆"></textarea>
+    </div>
+  </div>
+  <label>标签上声明的过敏原（勾选）</label>
+  <div id="supplier-declared-box" class="check-grid"></div>
+  <div class="toolbar">
+    <input type="text" id="supplier-custom-allergen" placeholder="自定义过敏原" style="max-width:180px">
+    <button class="ghost" onclick="addSupplierCustomAllergen()">添加并勾选</button>
+  </div>
+  <div class="toolbar">
+    <button onclick="runSupplierPreview()">生成风险区间预览</button>
+    <button class="ghost" onclick="fillSupplierDemo()">填充示例</button>
+    <span id="supplier-msg" class="error"></span>
+  </div>
+  <div id="supplier-result"></div>
+</section>
+
 <section id="result-section" class="hidden">
-  <h2>③ 审查结果 <span id="result-title" class="hint"></span></h2>
+  <h2>④ 审查结果 <span id="result-title" class="hint"></span></h2>
   <div id="recheck-bar"></div>
   <div id="recheck-panel" class="recheck-panel hidden"></div>
   <div id="result-body"></div>
@@ -143,7 +189,7 @@
 </section>
 
 <section>
-  <h2>④ 历史审查记录</h2>
+  <h2>⑤ 历史审查记录</h2>
   <div id="history-table"><p class="hint">暂无记录</p></div>
 </section>
 
@@ -157,6 +203,7 @@ const esc = s => String(s).replace(/[&<>"']/g,
 let presets = [];
 let dictEntries = [];
 let customAllergens = [];
+let supplierCustomAllergens = [];
 let currentReviewId = null;
 
 const DEMO_DICT = `小麦粉：麸质谷物
@@ -191,6 +238,7 @@ async function loadDict() {
   presets = p.allergens;
   renderDict();
   renderDeclaredBox();
+  renderSupplierDeclaredBox();
 }
 
 function renderDict() {
@@ -222,15 +270,34 @@ async function deleteEntry(name) {
 
 /* ---------- 声明过敏原勾选 ---------- */
 function renderDeclaredBox() {
+  renderCheckGrid('declared-box', customAllergens);
+}
+
+function renderSupplierDeclaredBox() {
+  renderCheckGrid('supplier-declared-box', supplierCustomAllergens);
+}
+
+function renderCheckGrid(boxId, extraAllergens) {
+  const box = $(boxId);
   const inDict = new Set();
   dictEntries.forEach(e => e.allergens.forEach(a => inDict.add(a)));
   const all = [...presets, ...[...inDict].filter(a => !presets.includes(a)),
-               ...customAllergens.filter(a => !presets.includes(a) && !inDict.has(a))];
-  const checked = new Set([...document.querySelectorAll('#declared-box input:checked')]
-    .map(i => i.value));
-  $('declared-box').innerHTML = all.map(a =>
+               ...extraAllergens.filter(a => !presets.includes(a) && !inDict.has(a))];
+  const checked = new Set([...box.querySelectorAll('input:checked')].map(i => i.value));
+  box.innerHTML = all.map(a =>
     `<label><input type="checkbox" value="${esc(a)}" ${checked.has(a) ? 'checked' : ''}> ${esc(a)}</label>`
   ).join('');
+}
+
+function addSupplierCustomAllergen() {
+  const v = $('supplier-custom-allergen').value.trim();
+  if (!v) return;
+  if (!supplierCustomAllergens.includes(v)) supplierCustomAllergens.push(v);
+  $('supplier-custom-allergen').value = '';
+  renderSupplierDeclaredBox();
+  document.querySelectorAll('#supplier-declared-box input').forEach(i => {
+    if (i.value === v) i.checked = true;
+  });
 }
 
 function addCustomAllergen() {
@@ -345,6 +412,132 @@ function resultBodyHtml(r, meta) {
     </div>`;
   }
   return html;
+}
+
+/* ---------- 供应商方案风险区间（临时预览） ---------- */
+async function runSupplierPreview() {
+  $('supplier-msg').textContent = '';
+  const declared = [...document.querySelectorAll('#supplier-declared-box input:checked')]
+    .map(i => i.value);
+  $('supplier-result').innerHTML = '<p class="hint">正在沿配料树传播必然 / 可能过敏原…</p>';
+  try {
+    const r = await post('/api/supplier-preview', {
+      text: $('supplier-text').value,
+      plans_text: $('supplier-plans').value,
+      declared,
+    });
+    $('supplier-result').innerHTML = supplierResultHtml(r);
+  } catch (e) {
+    $('supplier-result').innerHTML = '';
+    $('supplier-msg').textContent = e.message;
+  }
+}
+
+function supplierTreeHtml(nodes) {
+  if (!nodes || !nodes.length) return '';
+  return '<ul class="tree">' + nodes.map(n => {
+    const certainOwn = n.own_certain.map(a =>
+      `<span class="badge certain own" title="自身必然（各方案交集）">${esc(a)}</span>`).join('');
+    const possibleOwn = n.own_possible
+      .filter(a => !n.own_certain.includes(a) && !n.total_certain.includes(a))
+      .map(a => `<span class="badge possible own" title="自身可能（各方案并集减去必然）">${esc(a)}</span>`).join('');
+    const inherited = n.total_certain
+      .filter(a => !n.own_certain.includes(a))
+      .map(a => `<span class="badge certain" title="子配料传播 · 必然">${esc(a)}</span>`).join('');
+    const inheritedPossible = n.total_possible
+      .filter(a => !n.total_certain.includes(a))
+      .filter(a => !n.own_possible.includes(a))
+      .map(a => `<span class="badge inherit-possible" title="子配料传播 · 仅可能">${esc(a)}</span>`).join('');
+    const tags = (n.covered ? '<span class="tag-covered">🏷 供应商方案</span>' : '')
+      + (n.unknown ? '<span class="tag-unknown">⚠ 未识别</span>' : '');
+    return `<li><b>${esc(n.name)}</b>${tags} ${certainOwn}${possibleOwn}${inherited}${inheritedPossible}${supplierTreeHtml(n.children)}</li>`;
+  }).join('') + '</ul>';
+}
+
+function supplierPathCell(allergens, sources, cls) {
+  if (!allergens.length) return '<span class="hint">无</span>';
+  return allergens.map(a => {
+    const paths = (sources[a] || []);
+    const detail = paths.length
+      ? `<details class="src-detail" open>
+           <summary>来源路径（${paths.length}）</summary>
+           <ul class="src-paths">${paths.map(p =>
+             '<li>' + p.map((part, i) =>
+               `<span${i === p.length - 1 ? ' class="src-leaf"' : ''}>${esc(part)}</span>`
+             ).join('<span class="src-arrow"> › </span>') + '</li>').join('')}</ul>
+         </details>`
+      : '';
+    return `<div class="miss-item"><span class="badge ${cls}">${esc(a)}</span>${detail}</div>`;
+  }).join('');
+}
+
+function supplierResultHtml(r) {
+  const lc = r.label_check;
+  const warnings = (r.warnings || []).map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('');
+  const unknown = r.unknown_ingredients.length
+    ? `<p class="warn">⚠ 未识别原料（字典未登记且未被供应商方案覆盖）：${r.unknown_ingredients.map(esc).join('、')}</p>` : '';
+  const plans = (r.supplier_ingredients || []).map(item => {
+    const opts = item.plans.map((p, i) =>
+      `<span class="supplier-plan">方案${i + 1}：${p.length ? p.map(esc).join('、') : '无'}</span>`).join('');
+    const unused = item.used_in_recipe ? '' : ' <span class="pill gray">配方未使用</span>';
+    return `<tr><td><b>${esc(item.name)}</b>${unused}</td><td>${opts}</td></tr>`;
+  }).join('');
+  const plansBlock = plans
+    ? `<div class="result-block"><h3>已采用的供应商方案</h3>
+       <table><tr><th style="width:26%">原料</th><th>互斥方案</th></tr>${plans}</table></div>`
+    : '<div class="result-block"><p class="hint">未填写供应商方案，全部原料沿用字典，此时结论与常规审查一致。</p></div>';
+  return `<div class="result-block">
+    <h3>风险区间结论
+      ${lc.missing_certain.length ? `<span class="pill red">确定遗漏 ${lc.missing_certain.length} 项</span>` : ''}
+      ${lc.missing_possible.length ? `<span class="pill orange">潜在遗漏 ${lc.missing_possible.length} 项</span>` : ''}
+      ${lc.over_reported.length ? `<span class="pill gray">确定多报 ${lc.over_reported.length} 项</span>` : ''}
+      ${(!lc.missing_certain.length && !lc.missing_possible.length && !lc.over_reported.length)
+        ? '<span class="pill green">无风险项</span>' : ''}
+    </h3>
+    <table>
+      <tr><th style="width:15em">确定遗漏（必须补充）</th>
+        <td>${supplierPathCell(lc.missing_certain, lc.missing_certain_sources, 'certain')}</td>
+        <td class="hint">各方案下都必然存在、但标签未声明的过敏原</td></tr>
+      <tr><th>潜在遗漏（视供应商而定）</th>
+        <td>${supplierPathCell(lc.missing_possible, lc.missing_possible_sources, 'possible')}</td>
+        <td class="hint">至少一个方案会引入、但标签未声明；含确定遗漏，路径按“可能携带”原料收集</td></tr>
+      <tr><th>确定多报</th>
+        <td>${badges(lc.over_reported, 'over')}</td>
+        <td class="hint">标签声明了，但所有供应商方案下都不可能出现</td></tr>
+      <tr><th>潜在多报（视供应商而定）</th>
+        <td>${badges(lc.possible_over_reported, 'possible')}</td>
+        <td class="hint">标签已声明，仅部分方案会引入</td></tr>
+      <tr><th>必然一致</th>
+        <td>${badges(lc.matched_certain, 'ok')}</td>
+        <td class="hint">各方案下必然存在且标签已声明</td></tr>
+    </table></div>
+    <div class="result-block">
+      <h3>过敏原风险区间</h3>
+      <p>必然过敏原（各方案交集）：${badges(r.certain_allergens, 'certain')}<br>
+         可能过敏原（各方案并集）：${badges(r.possible_allergens, 'possible')}</p>
+      ${warnings}${unknown}
+    </div>
+    ${plansBlock}
+    <div class="result-block">
+      <h3>风险配料树</h3>
+      <p class="hint">深红徽章＝自身必然，浅橙徽章＝自身仅可能，浅色徽章为子配料传播；
+        🏷 表示该原料由供应商方案覆盖。</p>
+      ${supplierTreeHtml(r.tree)}
+    </div>`;
+}
+
+async function fillSupplierDemo() {
+  // 幂等补齐演示所需字典条目（供应商方案覆盖的奶粉 / 香精不依赖字典）
+  await post('/api/dict/bulk', {text: '小麦粉：麸质谷物\n鸡蛋：蛋类\n可可脂：'});
+  await loadDict();
+  $('supplier-text').value = '配料表：小麦粉，巧克力酱（奶粉，可可脂，香精），鸡蛋';
+  $('supplier-plans').value = '奶粉：乳；无\n香精：花生，乳；大豆';
+  renderSupplierDeclaredBox();
+  document.querySelectorAll('#supplier-declared-box input').forEach(i => {
+    i.checked = ['麸质谷物', '蛋类'].includes(i.value);
+  });
+  $('supplier-msg').textContent = '';
+  $('supplier-result').innerHTML = '';
 }
 
 /* ---------- 历史 ---------- */

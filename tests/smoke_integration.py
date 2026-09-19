@@ -173,4 +173,64 @@ db.update_review_result(old_rid, legacy_outcome["new_result"],
 assert db.get_review(old_rid)["needs_recheck"] is False
 print("6. 字典时效复核（指纹/误报防护/前后差异/确认覆盖/旧记录） OK")
 
+# 7. 供应商方案风险区间（临时预览：不写库、不留历史、不枚举组合）
+from app.supplier import (SupplierPlanError, parse_supplier_plans,
+                          preview_supplier_plans)
+
+reviews_before = len(db.list_reviews())
+dict_before = {e["ingredient"]: e["allergens"] for e in db.list_dict()}
+
+# 7a. 方案解析：分号分隔方案、逗号分隔过敏原、空方案写「无」、重复方案去重
+parsed = parse_supplier_plans("奶粉：乳，大豆；大豆，乳；无\n香精: 花生; 无")
+assert parsed["奶粉"] == [["乳", "大豆"], []], parsed["奶粉"]
+assert parsed["香精"] == [["花生"], []], parsed["香精"]
+try:
+    parse_supplier_plans("奶粉：乳；")  # 空方案必须写「无」
+    raise AssertionError("应当报格式错误")
+except SupplierPlanError:
+    pass
+
+# 7b. 不枚举组合：嵌套树上必然（交集）/ 可能（并集）分别传播
+sp_text = "配料表：小麦粉，巧克力酱（奶粉，可可脂，香精），鸡蛋"
+sp = preview_supplier_plans(
+    text=sp_text,
+    plans_text="奶粉：乳；无\n香精：花生，乳；大豆",
+    declared=["麸质谷物", "蛋类", "坚果"],
+    dictionary=dictionary)
+assert sp["certain_allergens"] == ["蛋类", "麸质谷物"], sp["certain_allergens"]
+assert sp["possible_allergens"] == ["乳", "大豆", "花生", "蛋类", "麸质谷物"], \
+    sp["possible_allergens"]
+lc = sp["label_check"]
+assert lc["missing_certain"] == [], lc
+assert lc["missing_possible"] == ["乳", "大豆", "花生"], lc
+assert lc["over_reported"] == ["坚果"], lc                 # 任何方案都不可能
+assert lc["possible_over_reported"] == [], lc
+assert lc["matched_certain"] == ["蛋类", "麸质谷物"], lc
+# 两类遗漏的来源路径分别保留（乳由两个被覆盖原料各自的方案引入）
+assert lc["missing_possible_sources"]["乳"] == [
+    ["巧克力酱", "奶粉"], ["巧克力酱", "香精"]], lc["missing_possible_sources"]
+assert lc["missing_possible_sources"]["花生"] == [["巧克力酱", "香精"]]
+
+# 7c. 只有一个方案时与现有审查口径一致
+single = preview_supplier_plans(
+    text=sp_text, plans_text="香精：大豆",
+    declared=["麸质谷物", "蛋类", "坚果"],
+    dictionary=dictionary)
+tree_s = parse_recipe(sp_text)
+merged = dict(dictionary)
+merged["香精"] = {"大豆"}
+attach_allergens(tree_s, merged)
+vs = build_version(tree_s)
+std_check = compare_label(vs["allergens"], ["麸质谷物", "蛋类", "坚果"], vs["tree"])
+assert single["certain_allergens"] == vs["allergens"]
+assert single["label_check"]["missing_certain"] == std_check["missing"]
+assert single["label_check"]["missing_certain_sources"] == \
+    std_check["missing_sources"]
+
+# 7d. 临时预览：字典与历史记录均无变化
+assert len(db.list_reviews()) == reviews_before
+assert {e["ingredient"]: e["allergens"] for e in db.list_dict()} == dict_before
+print("7. 供应商方案风险区间（交集/并集传播、五类结论、来源路径、"
+      "单方案一致性、不落库） OK")
+
 print("\n全部集成冒烟测试通过 ✔")
