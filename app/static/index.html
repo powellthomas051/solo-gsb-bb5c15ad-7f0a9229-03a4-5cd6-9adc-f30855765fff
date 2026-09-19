@@ -82,6 +82,19 @@
   .delta-path { margin: 2px 0 2px 18px; font-size: 13px; }
   .recheck-preview { border-top: 1px dashed #d0d7de; margin-top: 10px;
                      padding-top: 8px; }
+  /* 供应商方案风险区间 */
+  .badge.nec { background: #cdeccd; color: #14532d; font-weight: 600; }
+  .badge.pos { background: #fef3c7; color: #92600a; border: 1px dashed #d99e2b; }
+  .badge.cmiss { background: #ffd9d6; color: var(--red); font-weight: 600; }
+  .badge.pmiss { background: #ffedd5; color: var(--orange);
+                 border: 1px dashed #ed8936; }
+  .badge.cover { background: #eef1f4; color: #57606a; text-decoration: line-through; }
+  .badge.pover { background: #f8fafc; color: #b54708;
+                 border: 1px dashed #c9d1d9; }
+  .pill.blue { background: #e8eef7; color: #17457a; }
+  .tag-plan { font-size: 12px; margin-left: 6px; color: #92600a; }
+  .src-leaf.potential { color: var(--orange); }
+  .legend { font-size: 12.5px; color: #555; line-height: 2; margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -131,8 +144,38 @@
   </div>
 </section>
 
+<section>
+  <h2>③ 供应商方案风险区间 <span class="pill gray">临时预览</span></h2>
+  <p class="hint">为配方中的若干原料输入<b>互斥</b>供应商方案：每行一条
+    <code>原料：方案1；方案2</code>，方案内逗号分隔过敏原，空方案写「无」；
+    未覆盖原料沿用上方字典。后端不枚举方案组合，而是在配料树上分别传播
+    <b>必然过敏原（各方案交集）</b>与<b>可能过敏原（各方案并集）</b>，
+    据标签声明区分确定遗漏 / 潜在遗漏 / 确定多报 / 潜在多报。
+    本预览<b>不会</b>写入字典或历史记录。</p>
+  <div class="row">
+    <div>
+      <label>配方文本</label>
+      <textarea id="risk-text" rows="4"
+        placeholder="配料表：小麦粉，巧克力酱（奶粉（乳清粉），可可脂），鸡蛋"></textarea>
+    </div>
+    <div>
+      <label>互斥供应商方案（每行「原料：方案1；方案2」，空方案写「无」）</label>
+      <textarea id="risk-plans" rows="4"
+        placeholder="乳清粉：乳；无&#10;可可脂：无；坚果"></textarea>
+    </div>
+  </div>
+  <label>标签上声明的过敏原（逗号分隔，可留空）</label>
+  <input type="text" id="risk-declared" placeholder="例如：麸质谷物，蛋类，坚果">
+  <div class="toolbar">
+    <button onclick="submitRiskPreview()">预览风险区间</button>
+    <button class="ghost" onclick="fillRiskDemo()">填充风险示例</button>
+    <span id="risk-msg" class="error"></span>
+  </div>
+  <div id="risk-result"></div>
+</section>
+
 <section id="result-section" class="hidden">
-  <h2>③ 审查结果 <span id="result-title" class="hint"></span></h2>
+  <h2>④ 审查结果 <span id="result-title" class="hint"></span></h2>
   <div id="recheck-bar"></div>
   <div id="recheck-panel" class="recheck-panel hidden"></div>
   <div id="result-body"></div>
@@ -143,7 +186,7 @@
 </section>
 
 <section>
-  <h2>④ 历史审查记录</h2>
+  <h2>⑤ 历史审查记录</h2>
   <div id="history-table"><p class="hint">暂无记录</p></div>
 </section>
 
@@ -538,6 +581,119 @@ async function deleteReview(id) {
   if (!confirm('确定删除该审查记录？')) return;
   await api('/api/reviews/' + id, {method: 'DELETE'});
   await loadHistory();
+}
+
+/* ---------- 供应商方案风险区间（临时预览） ---------- */
+function splitAllergens(text) {
+  return [...new Set(text.split(/[,，、;；\s]+/).map(s => s.trim()).filter(Boolean))];
+}
+
+async function submitRiskPreview() {
+  $('risk-msg').textContent = '';
+  try {
+    const r = await post('/api/supplier-risk-preview', {
+      text: $('risk-text').value,
+      plans_text: $('risk-plans').value,
+      declared: splitAllergens($('risk-declared').value),
+    });
+    renderRiskResult(r);
+  } catch (e) {
+    $('risk-result').innerHTML = '';
+    $('risk-msg').textContent = e.message;
+  }
+}
+
+function riskCell(items, cls, sources, potential) {
+  if (!items.length) return '<span class="hint">无</span>';
+  return items.map(a => {
+    const paths = (sources || {})[a] || [];
+    const detail = paths.length
+      ? `<details class="src-detail" open>
+           <summary>来源路径（${paths.length}）</summary>
+           <ul class="src-paths">${paths.map(p =>
+             '<li>' + p.map((part, i) =>
+               `<span${i === p.length - 1 ? ` class="src-leaf${potential ? ' potential' : ''}"` : ''}>${esc(part)}</span>`
+             ).join('<span class="src-arrow"> › </span>') + '</li>').join('')}</ul>
+         </details>` : '';
+    return `<div class="miss-item"><span class="badge ${cls}">${esc(a)}</span>${detail}</div>`;
+  }).join('');
+}
+
+function riskTreeHtml(nodes) {
+  if (!nodes || !nodes.length) return '';
+  return '<ul class="tree">' + nodes.map(n => {
+    const nec = n.own_necessary.map(a => `<span class="badge nec" title="自身必然含有（各方案交集）">${esc(a)}</span>`).join('');
+    const ownPosOnly = n.own_possible.filter(a => !n.own_necessary.includes(a));
+    const pos = ownPosOnly.map(a => `<span class="badge pos" title="自身仅部分方案可能含有（方案并集 − 交集）">${esc(a)}</span>`).join('');
+    const childNec = n.total_necessary.filter(a => !n.own_necessary.includes(a))
+      .map(a => `<span class="badge" title="子配料必然传播">${esc(a)}</span>`).join('');
+    const childPosOnly = n.total_possible.filter(a =>
+      !n.total_necessary.includes(a) && !ownPosOnly.includes(a))
+      .map(a => `<span class="badge pos" title="子配料仅可能传播">${esc(a)}</span>`).join('');
+    const tag = n.overridden
+      ? `<span class="tag-plan" title="该原料被供应商方案覆盖，不使用字典">◈ 方案×${n.plan_count}</span>` : '';
+    const unknown = n.unknown ? '<span class="tag-unknown">⚠ 未识别</span>' : '';
+    return `<li><b>${esc(n.name)}</b>${tag}${unknown} ${nec}${pos}${childNec}${childPosOnly}${riskTreeHtml(n.children)}</li>`;
+  }).join('') + '</ul>';
+}
+
+function renderRiskResult(r) {
+  const c = r.label_check;
+  const modePill = r.single_plan
+    ? '<span class="pill green" title="所有覆盖原料均只有单一方案，与现有审查口径一致">单方案 · 与正式审查一致</span>'
+    : '<span class="pill blue" title="存在互斥方案，过敏原为区间估计">多方案 · 区间预览</span>';
+  let html = `<div class="result-block">
+    <h3>标签核对（风险区间）${modePill}</h3>
+    <p class="legend">图例：
+      <span class="badge cmiss">确定遗漏</span> 必然含有且未声明；
+      <span class="badge pmiss">潜在遗漏</span> 仅部分方案可能含有且未声明；
+      <span class="badge cover">确定多报</span> 任何方案都不可能含有；
+      <span class="badge pover">潜在多报</span> 仅部分方案可能引入；
+      <span class="badge ok">一致</span> 必然含有且已声明</p>
+    <table>
+      <tr><th style="width:14em">确定遗漏（必须补充）</th><td>${riskCell(c.certain_missing, 'cmiss', c.certain_missing_sources, false)}</td></tr>
+      <tr><th>潜在遗漏（视供应商而定）</th><td>${riskCell(c.potential_missing, 'pmiss', c.potential_missing_sources, true)}</td></tr>
+      <tr><th>确定多报</th><td>${badges(c.certain_over_reported, 'cover')}</td></tr>
+      <tr><th>潜在多报</th><td>${badges(c.potential_over_reported, 'pover')}</td></tr>
+      <tr><th>声明一致</th><td>${badges(c.matched, 'ok')}</td></tr>
+    </table></div>`;
+
+  html += `<div class="result-block">
+    <h3>整份配方风险区间</h3>
+    <p>必然过敏原（所有供应商选择下都含有）：${badges(r.allergens_necessary, 'nec')}<br>
+       可能过敏原（至少一个方案可能引入）：${badges(r.allergens_possible, 'pos')}</p>
+    <p class="legend"><span class="badge nec">深绿</span> 该原料各方案下必然含有；
+      <span class="badge pos">黄色虚线</span> 仅部分方案可能含有；
+      浅色无描边徽章为子配料传播。<span class="tag-plan">◈ 方案×n</span>
+      标记被供应商方案覆盖（不使用字典）的原料。</p>`;
+  if (r.unknown_ingredients.length)
+    html += `<p class="warn">⚠ 未识别原料（字典未登记且无供应商方案）：${r.unknown_ingredients.map(esc).join('、')}</p>`;
+  html += riskTreeHtml(r.tree) + '</div>';
+
+  if (r.overrides.length) {
+    const rows = r.overrides.map(o => {
+      const plans = o.plans.map((p, i) =>
+        (p.length ? p.map(esc).join('、') : '<span class="hint">无（不含过敏原）</span>')
+        + (o.plans.length > 1 ? ` <span class="hint">[方案${i + 1}]</span>` : '')).join('　｜　');
+      return `<tr><td>${esc(o.ingredient)}${o.used ? '' : ' <span class="pill orange">配方未使用</span>'}</td><td>${plans}</td></tr>`;
+    }).join('');
+    html += `<div class="result-block"><h3>本次采用的供应商方案（覆盖字典，仅本预览有效）</h3>
+      <table><tr><th style="width:30%">原料</th><th>互斥方案</th></tr>${rows}</table></div>`;
+  }
+  if (r.unused_plan_ingredients.length)
+    html += `<p class="warn">以下方案原料未在配方中出现，已忽略：${r.unused_plan_ingredients.map(esc).join('、')}</p>`;
+  $('risk-result').innerHTML = html;
+}
+
+async function fillRiskDemo() {
+  $('bulk-text').value = DEMO_DICT;
+  await importBulk();
+  $('risk-text').value = "配料表：小麦粉，巧克力酱（可可脂，奶粉（乳清粉，乳糖），大豆卵磷脂），鸡蛋，食盐";
+  // 乳清粉两个互斥方案使乳仅可能；奶粉/乳糖单方案「无」覆盖字典；
+  // 可可脂两方案使坚果可能。大豆未覆盖、沿用字典 -> 仍然确定。
+  $('risk-plans').value = "乳清粉：乳；无\n奶粉：无\n乳糖：无\n可可脂：无；坚果";
+  $('risk-declared').value = "麸质谷物，蛋类，坚果，鱼";
+  $('risk-msg').textContent = '示例已填充：乳为潜在遗漏，大豆为确定遗漏（沿用字典），坚果为潜在多报，鱼为确定多报';
 }
 
 /* ---------- 示例 ---------- */

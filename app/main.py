@@ -21,6 +21,7 @@ from . import db
 from .recheck import build_recheck
 from .report import render_html_report, render_markdown_report
 from .review import analyze
+from .supplier_risk import SupplierPlanError, analyze_supplier_risk
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -66,6 +67,12 @@ class RecheckRequest(BaseModel):
     confirm: bool = False
 
 
+class SupplierRiskPreview(BaseModel):
+    text: str
+    plans_text: str = ""
+    declared: List[str] = Field(default_factory=list)
+
+
 # ---------- 页面 ----------
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -105,6 +112,27 @@ def delete_entry(ingredient: str):
 def bulk_import(payload: BulkImport):
     imported = db.bulk_import(payload.text)
     return {"ok": True, "imported": imported}
+
+
+# ---------- 供应商方案风险区间（临时预览） ----------
+
+@app.post("/api/supplier-risk-preview")
+def supplier_risk_preview(payload: SupplierRiskPreview):
+    """互斥过敏原方案的风险区间预览。
+
+    仅基于当前字典做只读计算：在配料树上分别传播必然（方案交集）与
+    可能（方案并集）过敏原，输出确定遗漏 / 潜在遗漏 / 确定多报 /
+    潜在多报 / 一致五类结论。不枚举方案组合，也不写入字典或历史记录。
+    """
+    if not payload.text.strip():
+        raise HTTPException(400, "配方文本不能为空")
+    declared = sorted({a.strip() for a in payload.declared if a.strip()})
+    try:
+        return analyze_supplier_risk(
+            text=payload.text, plans_text=payload.plans_text,
+            declared=declared)
+    except SupplierPlanError as exc:
+        raise HTTPException(400, str(exc))
 
 
 # ---------- 审查 ----------
